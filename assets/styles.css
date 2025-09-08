@@ -1,0 +1,25 @@
+body {
+font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+background-color: #f0f2f5;
+color: #333;
+}
+.header {
+background-color: #fff;
+padding: 20px;
+border-radius: 5px;
+margin-bottom: 20px;
+box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.tab-content {
+padding: 20px;
+background-color: #fff;
+border-radius: 5px;
+box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.news-item {
+border-bottom: 1px solid #eee;
+padding: 10px 0;
+}
+.positive-sentiment { color: #28a745; }
+.negative-sentiment { color: #dc3545; }
+.neutral-sentiment { color: #6c757d; }
