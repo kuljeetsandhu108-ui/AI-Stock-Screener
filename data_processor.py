@@ -44,9 +44,12 @@ def calculate_pivot_points(df):
     if df.empty or len(df) < 2: return {}
     
     last_candle = df.iloc[-2]
+    # --- THIS IS THE CRITICAL FIX ---
+    # Use lowercase column names to match the standardized data from app.py
     high = last_candle['high']
     low = last_candle['low']
     close = last_candle['close']
+    # --- END FIX ---
     
     pivot = (high + low + close) / 3
     r1 = (2 * pivot) - low
@@ -61,12 +64,9 @@ def calculate_pivot_points(df):
 
 def get_competitors(ticker):
     """A placeholder function to get competitor data."""
-    # --- THIS IS THE CRITICAL FIX ---
-    # Corrected the variable name from 'competitor_' to 'competitor_map'
     competitor_map = {
         "RELIANCE": ["TCS", "INFY", "BHARTIARTL"],
         "TCS": ["INFY", "WIPRO", "HCLTECH"],
         "HDFCBANK": ["ICICIBANK", "SBIN", "KOTAKBANK"]
     }
-    # --- END FIX ---
     return competitor_map.get(ticker.upper(), [])
