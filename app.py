@@ -4,12 +4,14 @@ from dash.dependencies import Input, Output, State
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import pandas as pd
-import pandas_ta as ta # Import pandas_ta here
+import pandas_ta as ta
 import yfinance as yf
+import traceback
 
-import ai_services as ai # We still use this
+# We will still use ai_services.py for Gemini and NewsAPI
+import ai_services as ai
 
-# --- All Helper Functions are now INSIDE app.py ---
+# --- All Helper Functions are now INSIDE app.py to guarantee they are the correct version ---
 
 def get_stock_info(ticker):
     """Fetches fundamental data using yfinance."""
@@ -49,33 +51,20 @@ def run_graham_scan(ticker):
         return {}
 
 def calculate_pivot_points(df):
-    """Calculates standard pivot points. This version now correctly expects lowercase columns."""
+    """Calculates standard pivot points. This version correctly expects lowercase columns."""
     if df.empty or len(df) < 2: return {}
-    
     last_candle = df.iloc[-2]
-    # --- THE CRITICAL FIX IS NOW DIRECTLY IN THIS FILE ---
-    high = last_candle['high']
-    low = last_candle['low']
-    close = last_candle['close']
-    
+    high, low, close = last_candle['high'], last_candle['low'], last_candle['close']
     pivot = (high + low + close) / 3
     r1 = (2 * pivot) - low
     s1 = (2 * pivot) - high
     r2 = pivot + (high - low)
     s2 = pivot - (high - low)
-    
-    return {
-        "Resistance 2 (R2)": r2, "Resistance 1 (R1)": r1, "Pivot Point": pivot,
-        "Support 1 (S1)": s1, "Support 2 (S2)": s2
-    }
+    return {"R2": r2, "R1": r1, "Pivot": pivot, "S1": s1, "S2": s2}
 
 def get_competitors(ticker):
     """A placeholder function to get competitor data."""
-    competitor_map = {
-        "RELIANCE": ["TCS", "INFY", "BHARTIARTL"],
-        "TCS": ["INFY", "WIPRO", "HCLTECH"],
-        "HDFCBANK": ["ICICIBANK", "SBIN", "KOTAKBANK"]
-    }
+    competitor_map = {"RELIANCE": ["TCS", "INFY"], "TCS": ["INFY", "WIPRO"], "HDFCBANK": ["ICICIBANK", "SBIN"]}
     return competitor_map.get(ticker.upper(), [])
 
 # --- Main App Initialization ---
@@ -90,22 +79,27 @@ app.layout = html.Div([
         dcc.Input(id='stock-input', type='text', value='RELIANCE', style={'marginRight': '10px'}),
         html.Button('Analyze', id='submit-button', n_clicks=0),
     ], className='header'),
+
+    dcc.Store(id='ticker-store'),
+    html.Div(id='live-price-display', style={'marginTop': '20px'}),
     dcc.Loading(
         id="loading-spinner", type="circle",
-        children=html.Div(id='dashboard-content', style={'marginTop': '20px'})
-    )
+        children=html.Div(id='dashboard-tabs-content')
+    ),
+    dcc.Interval(id='live-price-interval', interval=3 * 1000, n_intervals=0)
 ], style={'padding': '20px'})
 
 
-# --- The Single Main Callback ---
+# --- Callback 1: Fetch data and build the main tabs ---
 @app.callback(
-    Output('dashboard-content', 'children'),
+    Output('dashboard-tabs-content', 'children'),
+    Output('ticker-store', 'data'),
     Input('submit-button', 'n_clicks'),
     State('stock-input', 'value')
 )
-def update_dashboard(n_clicks, ticker):
+def update_dashboard_tabs(n_clicks, ticker):
     if n_clicks == 0:
-        return html.Div("Please enter a stock ticker and click 'Analyze'.")
+        return html.Div("Please enter a stock ticker and click 'Analyze'."), ""
 
     print(f"--- FETCHING ALL DATA FOR {ticker} ---")
     ticker = ticker.upper()
@@ -113,22 +107,16 @@ def update_dashboard(n_clicks, ticker):
     try:
         fundamentals, summary = get_stock_info(ticker)
         if not fundamentals:
-            return html.Div(f"Could not retrieve fundamental data for {ticker}. Please check the ticker symbol.")
+            return html.Div(f"Could not retrieve fundamental data for {ticker}."), ticker
 
         hist_df = yf.download(f"{ticker}.NS", period="2y", progress=False)
         if hist_df.empty:
-            return html.Div(f"Could not retrieve historical price data for {ticker}.")
+            return html.Div(f"Could not retrieve historical data for {ticker}."), ticker
 
-        # --- THE DEFINITIVE FIX FOR ALL COLUMN ERRORS ---
-        # This handles both simple columns and complex "MultiIndex" columns from yfinance.
         if isinstance(hist_df.columns, pd.MultiIndex):
-            # If it's a MultiIndex, take the first level, e.g., ('Close', 'RELIANCE.NS') -> 'Close'
             hist_df.columns = hist_df.columns.get_level_values(0)
-        
-        # Now, standardize all column names to lowercase.
         hist_df.columns = [str(col).lower() for col in hist_df.columns]
-        # --- END FIX ---
-
+        
         tech_df = calculate_technical_indicators(hist_df.copy())
         tech_df.columns = [str(col).lower() for col in tech_df.columns]
         
@@ -139,116 +127,85 @@ def update_dashboard(n_clicks, ticker):
         competitors = get_competitors(ticker)
 
         print("--- DATA FETCHING COMPLETE ---")
-        
-        # --- ASSEMBLE AND RETURN THE FINAL LAYOUT (with Live Ticker) ---
-        return html.Div([
-            html.Div([
-                html.H2(f"{ticker} - {fundamentals.get('Sector', '')}", style={'flexGrow': 1}),
-                html.Div(id='live-price-container', children="Fetching live price...")
-            ], style={'display': 'flex', 'alignItems': 'center', 'padding': '10px', 'border': '1px solid #ddd', 'borderRadius': '5px', 'marginBottom': '20px'}),
-            
-            html.Div(className='tab-content', children=[
-                dcc.Tabs(id="main-tabs-final", children=[
-                    dcc.Tab(label='Overview', children=create_overview_tab(summary, fundamentals, hist_df)),
-                    dcc.Tab(label='Technicals', children=create_technicals_tab(tech_df)),
-                    dcc.Tab(label='Scans', children=create_scans_tab(pivot_points, graham_scan)),
-                    dcc.Tab(label='AI Report', children=create_ai_report_tab(ai_report)),
-                    dcc.Tab(label='News & Sentiment', children=create_news_tab(news_articles)),
-                    dcc.Tab(label='Competitors', children=create_competitors_tab(competitors)),
-                ])
-            ]),
-            
-            dcc.Interval(
-                id='live-price-interval', interval=3 * 1000, n_intervals=0
-            )
-        ])
+
+        # --- Build UI Components using local functions ---
+        overview_tab = create_overview_tab(summary, fundamentals, hist_df)
+        technicals_tab = create_technicals_tab(tech_df)
+        scans_tab = create_scans_tab(pivot_points, graham_scan)
+        ai_report_tab = create_ai_report_tab(ai_report)
+        news_tab = create_news_tab(news_articles)
+        competitors_tab = create_competitors_tab(competitors)
+
+        return html.Div(className='tab-content', children=[
+            dcc.Tabs(id="main-tabs-final", children=[
+                dcc.Tab(label='Overview', children=overview_tab),
+                dcc.Tab(label='Technicals', children=technicals_tab),
+                dcc.Tab(label='Scans', children=scans_tab),
+                dcc.Tab(label='AI Report', children=ai_report_tab),
+                dcc.Tab(label='News & Sentiment', children=news_tab),
+                dcc.Tab(label='Competitors', children=competitors_tab),
+            ])
+        ]), ticker
 
     except Exception as e:
-        print(f"--- AN UNHANDLED ERROR OCCURRED ---")
-        import traceback
         traceback.print_exc()
-        return html.Div(f"An error occurred: '{e}'. Please check the ticker symbol and your API keys. More details in the terminal.")
+        return html.Div(f"An error occurred: '{e}'."), ticker
 
-# --- NEW: CALLBACK FOR LIVE PRICE UPDATES ---
+
+# --- Callback 2: Update the live price display ---
 @app.callback(
-    Output('live-price-container', 'children'),
+    Output('live-price-display', 'children'),
     Input('live-price-interval', 'n_intervals'),
-    State('stock-input', 'value')
+    State('ticker-store', 'data')
 )
 def update_live_price(n, ticker):
     if not ticker:
-        return no_update
+        return html.Div()
 
     try:
-        # We use the full .info call here as it's more reliable for closing prices
-        stock_info = yf.Ticker(f"{ticker.upper()}.NS").info
-        
-        # Try multiple keys to find the price, starting with the most likely
+        stock_info = yf.Ticker(f"{ticker}.NS").info
         live_price = stock_info.get('currentPrice')
         previous_close = stock_info.get('previousClose')
 
-        # --- NEW BULLETPROOF LOGIC ---
-        display_price = None
-        price_label = ""
+        display_price = live_price if live_price is not None else previous_close
+        if display_price is None: return html.Div()
+
         change = 0
-
-        if live_price is not None:
-            # We have a live price
-            display_price = live_price
-            change = display_price - previous_close if previous_close else 0
-        elif previous_close is not None:
-            # No live price, but we have the last close
-            display_price = previous_close
-            price_label = "Last Close: "
-            change = 0 # Change is zero when showing closing price
+        price_label = "Last Close: "
+        if live_price is not None and previous_close is not None:
+            change = display_price - previous_close
+            price_label = ""
         
-        if display_price is None:
-            # If we still have no price, show a clear message
-            return html.P("Price data not available.", style={'color': 'gray', 'margin': 0, 'marginLeft': 'auto'})
-        # --- END LOGIC ---
-
         change_percent = (change / previous_close) * 100 if previous_close else 0
-        
         color = '#34A853' if change >= 0 else '#EA4335'
         symbol = '▲' if change >= 0 else '▼'
 
         return html.Div([
+            html.H2(f"{ticker}", style={'flexGrow': 1}),
             html.H2(f"{price_label}₹{display_price:,.2f}", style={'margin': 0, 'marginRight': '20px'}),
-            html.H3(
-                f"{symbol} {change:,.2f} ({change_percent:.2f}%)",
-                style={'color': color, 'margin': 0}
-            )
-        ], style={'display': 'flex', 'alignItems': 'center', 'textAlign': 'right', 'marginLeft': 'auto'})
+            html.H3(f"{symbol} {change:,.2f} ({change_percent:.2f}%)", style={'color': color, 'margin': 0})
+        ], style={'display': 'flex', 'alignItems': 'center', 'padding': '10px', 'border': '1px solid #ddd', 'borderRadius': '5px'})
 
     except Exception:
-        return html.P("Price data not available.", style={'color': 'orange', 'margin': 0, 'marginLeft': 'auto'})
+        return html.Div()
 
 
 # --- All Component Creation Functions (Now safely inside app.py) ---
 def create_overview_tab(summary, fundamentals, hist_df):
-    price_chart = go.Figure(data=[go.Candlestick(
-        x=hist_df.index, open=hist_df['open'], high=hist_df['high'],
-        low=hist_df['low'], close=hist_df['close']
-    )])
-    price_chart.update_layout(title=f"Price Chart", xaxis_rangeslider_visible=False)
+    price_chart = go.Figure(data=[go.Candlestick(x=hist_df.index, open=hist_df['open'], high=hist_df['high'], low=hist_df['low'], close=hist_df['close'])])
+    price_chart.update_layout(title="Price Chart", xaxis_rangeslider_visible=False)
     return html.Div([
         html.H3('Company Overview'), html.P(summary),
         html.H3('Key Fundamentals'),
-        dash_table.DataTable(
-            data=[{'Metric': k, 'Value': f"{v:,.2f}" if isinstance(v, (int, float)) else v} for k, v in fundamentals.items() if v is not None],
-            columns=[{'name': 'Metric', 'id': 'Metric'}, {'name': 'Value', 'id': 'Value'}]
-        ),
+        dash_table.DataTable(data=[{'Metric': k, 'Value': f"{v:,.2f}" if isinstance(v, (int, float)) else v} for k, v in fundamentals.items() if v is not None], columns=[{'name': 'Metric', 'id': 'Metric'}, {'name': 'Value', 'id': 'Value'}]),
         dcc.Graph(figure=price_chart)
     ])
 
 def create_technicals_tab(tech_df):
-    price_chart_with_indicators = go.Figure(data=[go.Candlestick(
-        x=tech_df.index, open=tech_df['open'], high=tech_df['high'],
-        low=tech_df['low'], close=tech_df['close']
-    )])
+    price_chart_with_indicators = go.Figure(data=[go.Candlestick(x=tech_df.index, open=tech_df['open'], high=tech_df['high'], low=tech_df['low'], close=tech_df['close'])])
     price_chart_with_indicators.add_trace(go.Scatter(x=tech_df.index, y=tech_df['ema_50'], mode='lines', name='50-Day EMA', line={'color': 'orange'}))
     price_chart_with_indicators.add_trace(go.Scatter(x=tech_df.index, y=tech_df['ema_200'], mode='lines', name='200-Day EMA', line={'color': 'purple'}))
-    price_chart_with_indicators.update_layout(title=f"Price Chart with Indicators", xaxis_rangeslider_visible=False)
+    price_chart_with_indicators.update_layout(title="Price Chart with Indicators", xaxis_rangeslider_visible=False)
     rsi_chart = go.Figure(go.Scatter(x=tech_df.index, y=tech_df['rsi_14'], mode='lines', name='RSI'))
     rsi_chart.update_layout(title='Relative Strength Index (RSI)')
     return html.Div([dcc.Graph(figure=price_chart_with_indicators), dcc.Graph(figure=rsi_chart)])
@@ -256,15 +213,9 @@ def create_technicals_tab(tech_df):
 def create_scans_tab(pivot_points, graham_scan):
     return html.Div([
         html.H3('Pivot Points'),
-        dash_table.DataTable(
-            data=[{'Level': k, 'Price': f"{v:.2f}"} for k, v in pivot_points.items()],
-            columns=[{'name': 'Level', 'id': 'Level'}, {'name': 'Price', 'id': 'Price'}]
-        ),
+        dash_table.DataTable(data=[{'Level': k, 'Price': f"{v:.2f}"} for k, v in pivot_points.items()], columns=[{'name': 'Level', 'id': 'Level'}, {'name': 'Price', 'id': 'Price'}]),
         html.Br(), html.H3('Graham Value Scan'),
-        dash_table.DataTable(
-            data=[{'Metric': k, 'Value': v} for k, v in graham_scan.items()],
-            columns=[{'name': 'Metric', 'id': 'Metric'}, {'name': 'Value', 'id': 'Value'}]
-        )
+        dash_table.DataTable(data=[{'Metric': k, 'Value': v} for k, v in graham_scan.items()], columns=[{'name': 'Metric', 'id': 'Metric'}, {'name': 'Value', 'id': 'Value'}])
     ])
 
 def create_ai_report_tab(ai_report):
@@ -272,22 +223,10 @@ def create_ai_report_tab(ai_report):
 
 def create_news_tab(news_articles):
     if not news_articles: return html.Div("No recent news articles found.")
-    news_elements = []
-    total_sentiment_score = 0
-    for article in news_articles:
-        sentiment, score = ai.analyze_sentiment(article['title'])
-        total_sentiment_score += score
-        news_elements.append(html.Div([
-            html.H5(html.A(article['title'], href=article['url'], target='_blank')),
-            html.P(f"Sentiment: {sentiment}", className=f"{sentiment.lower()}-sentiment")
-        ], className='news-item'))
-    avg_sentiment = total_sentiment_score / len(news_articles)
+    news_elements = [html.Div([html.H5(html.A(a['title'], href=a['url'], target='_blank')), html.P(f"Sentiment: {ai.analyze_sentiment(a['title'])[0]}", className=f"{ai.analyze_sentiment(a['title'])[0].lower()}-sentiment")], className='news-item') for a in news_articles]
+    avg_sentiment = sum(ai.analyze_sentiment(a['title'])[1] for a in news_articles) / len(news_articles) if news_articles else 0
     return html.Div([
-        dcc.Graph(figure=go.Figure(go.Indicator(
-            mode="gauge+number", value=avg_sentiment, title={'text': "Overall News Sentiment"},
-            gauge={'axis': {'range': [-1, 1]}, 'steps': [
-                {'range': [-1, -0.05], 'color': "#EA4335"}, {'range': [-0.05, 0.05], 'color': "#FBBC04"},
-                {'range': [0.05, 1], 'color': "#34A853"}]}))),
+        dcc.Graph(figure=go.Figure(go.Indicator(mode="gauge+number", value=avg_sentiment, title={'text': "Overall News Sentiment"}, gauge={'axis': {'range': [-1, 1]}, 'steps': [{'range': [-1, -0.05], 'color': "#EA4335"}, {'range': [-0.05, 0.05], 'color': "#FBBC04"}, {'range': [0.05, 1], 'color': "#34A853"}]}))),
         html.Hr(), *news_elements
     ])
 
@@ -295,17 +234,10 @@ def create_competitors_tab(competitors_list):
     competitor_data = []
     for comp_ticker in competitors_list:
         comp_fundamentals, _ = get_stock_info(comp_ticker)
-        market_cap = comp_fundamentals.get('Market Cap')
-        pe_ratio = comp_fundamentals.get('P/E Ratio')
-        competitor_data.append({
-            'Ticker': comp_ticker,
-            'Market Cap': f"{market_cap / 1_00_00_000:,.2f} Cr" if market_cap else "N/A",
-            'P/E Ratio': f"{pe_ratio:.2f}" if pe_ratio else "N/A"
-        })
-    return html.Div([
-        html.H3('Competitor Analysis'),
-        dash_table.DataTable(data=competitor_data, columns=[{'name': i, 'id': i} for i in ['Ticker', 'Market Cap', 'P/E Ratio']])
-    ])
+        mc, pe = comp_fundamentals.get('Market Cap'), comp_fundamentals.get('P/E Ratio')
+        competitor_data.append({'Ticker': comp_ticker, 'Market Cap': f"{mc / 1e7:,.2f} Cr" if mc else "N/A", 'P/E Ratio': f"{pe:.2f}" if pe else "N/A"})
+    return html.Div([html.H3('Competitor Analysis'), dash_table.DataTable(data=competitor_data, columns=[{'name': i, 'id': i} for i in ['Ticker', 'Market Cap', 'P/E Ratio']])])
+
 
 # --- Main execution block ---
 if __name__ == '__main__':
