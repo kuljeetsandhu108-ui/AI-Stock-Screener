@@ -10,7 +10,7 @@ import traceback
 
 import ai_services as ai
 
-# --- All Helper Functions are now INSIDE app.py to guarantee they are the correct version ---
+# --- All Helper Functions are now INSIDE app.py ---
 
 def get_stock_info(ticker):
     """Fetches fundamental data using yfinance."""
@@ -24,8 +24,7 @@ def get_stock_info(ticker):
             "Sector": info.get('sector'), "Industry": info.get('industry')
         }
         return fundamentals, info.get('longBusinessSummary')
-    except Exception:
-        return {}, None
+    except Exception: return {}, None
 
 def calculate_technical_indicators(df):
     """Calculates technical indicators. Expects lowercase columns."""
@@ -42,11 +41,10 @@ def run_graham_scan(ticker):
         if pe is None or pb is None: return {"Verdict": "Not enough data"}
         verdict = "Potentially Undervalued" if pe < 15 and pb < 1.5 else "Not Meeting Graham Criteria"
         return {"P/E Ratio": f"{pe:.2f}", "P/B Ratio": f"{pb:.2f}", "Verdict": verdict}
-    except Exception:
-        return {}
+    except Exception: return {}
 
 def calculate_pivot_points(df):
-    """Calculates standard pivot points. This version correctly expects lowercase columns."""
+    """Calculates standard pivot points. Expects lowercase columns."""
     if df.empty or len(df) < 2: return {}
     last = df.iloc[-2]
     high, low, close = last['high'], last['low'], last['close']
@@ -78,7 +76,7 @@ app.layout = html.Div([
         id="loading-spinner", type="circle",
         children=html.Div(id='dashboard-tabs-content')
     ),
-    dcc.Interval(id='global-interval-timer', interval=5 * 1000, n_intervals=0)
+    dcc.Interval(id='global-interval-timer', interval=15 * 1000, n_intervals=0)
 ], style={'padding': '20px'})
 
 
@@ -186,27 +184,44 @@ def update_live_price(n, ticker):
     Input('global-interval-timer', 'n_intervals')
 )
 def update_market_pulse(n):
-    indices = {"NIFTY 50": "^NSEI", "BANK NIFTY": "^NSEBANK", "SENSEX": "^BSESN"}
+    indian_indices = {"NIFTY 50": "^NSEI", "BANK NIFTY": "^NSEBANK", "SENSEX": "^BSESN"}
+    global_indices = {"DOW JONES": "^DJI", "NASDAQ": "^IXIC", "NIKKEI 225": "^N225", "GIFT NIFTY": "NF=F"}
+    all_indices = {**indian_indices, **global_indices}
     cards = []
     try:
-        data = yf.download(tickers=list(indices.values()), period="2d", progress=False)
-        for name, symbol in indices.items():
+        data = yf.download(tickers=list(all_indices.values()), period="2d", progress=False)
+        
+        def create_card(name, symbol):
             price = data['Close'][symbol].iloc[-1]
             prev_close = data['Close'][symbol].iloc[-2]
+            if pd.isna(price) or pd.isna(prev_close): return None
             change = price - prev_close
             change_percent = (change / prev_close) * 100
             color = '#34A853' if change >= 0 else '#EA4335'
             symbol_char = '▲' if change >= 0 else '▼'
-            card = html.Div([
+            return html.Div([
                 html.H4(name, style={'margin': 0, 'color': '#555'}),
                 html.H3(f"{price:,.2f}", style={'margin': 0}),
                 html.P(f"{symbol_char} {change:,.2f} ({change_percent:.2f}%)", style={'color': color, 'margin': 0})
             ], className="mini-card", style={'padding': '15px', 'border': '1px solid #ddd', 'borderRadius': '5px', 'textAlign': 'center', 'backgroundColor': '#f9f9f9'})
-            cards.append(card)
-        return html.Div(cards, style={'display': 'grid', 'gridTemplateColumns': 'repeat(3, 1fr)', 'gap': '20px'})
+
+        indian_cards = [create_card(name, symbol) for name, symbol in indian_indices.items()]
+        global_cards = [create_card(name, symbol) for name, symbol in global_indices.items()]
+        
+        # Filter out None values in case some tickers failed
+        indian_cards = [card for card in indian_cards if card is not None]
+        global_cards = [card for card in global_cards if card is not None]
+
+        return html.Div([
+            html.H3("Indian Markets", style={'marginBottom': '10px'}),
+            html.Div(indian_cards, style={'display': 'grid', 'gridTemplateColumns': 'repeat(3, 1fr)', 'gap': '20px'}),
+            html.Hr(style={'marginTop': '20px', 'marginBottom': '20px'}),
+            html.H3("Global Markets", style={'marginBottom': '10px'}),
+            html.Div(global_cards, style={'display': 'grid', 'gridTemplateColumns': 'repeat(4, 1fr)', 'gap': '20px'})
+        ])
     except Exception as e:
         print(f"Error fetching market pulse: {e}")
-        return html.Div()
+        return html.Div("Could not fetch market data at this time.")
 
 
 # --- Component Creation Functions (Safely inside app.py) ---
