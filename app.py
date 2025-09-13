@@ -8,7 +8,6 @@ import pandas_ta as ta
 import yfinance as yf
 import traceback
 
-# We will still use ai_services.py for Gemini and NewsAPI
 import ai_services as ai
 
 # --- All Helper Functions are now INSIDE app.py to guarantee they are the correct version ---
@@ -29,21 +28,17 @@ def get_stock_info(ticker):
         return {}, None
 
 def calculate_technical_indicators(df):
-    """Calculates technical indicators. Expects a DataFrame with lowercase columns."""
+    """Calculates technical indicators. Expects lowercase columns."""
     if df.empty: return pd.DataFrame()
-    df.ta.rsi(append=True)
-    df.ta.macd(append=True)
-    df.ta.bbands(append=True)
-    df.ta.ema(length=50, append=True)
-    df.ta.ema(length=200, append=True)
+    df.ta.rsi(append=True); df.ta.macd(append=True); df.ta.bbands(append=True)
+    df.ta.ema(length=50, append=True); df.ta.ema(length=200, append=True)
     return df
 
 def run_graham_scan(ticker):
     """Performs a basic Benjamin Graham value scan."""
     try:
         info = yf.Ticker(f"{ticker}.NS").info
-        pe = info.get('trailingPE')
-        pb = info.get('priceToBook')
+        pe, pb = info.get('trailingPE'), info.get('priceToBook')
         if pe is None or pb is None: return {"Verdict": "Not enough data"}
         verdict = "Potentially Undervalued" if pe < 15 and pb < 1.5 else "Not Meeting Graham Criteria"
         return {"P/E Ratio": f"{pe:.2f}", "P/B Ratio": f"{pb:.2f}", "Verdict": verdict}
@@ -53,14 +48,10 @@ def run_graham_scan(ticker):
 def calculate_pivot_points(df):
     """Calculates standard pivot points. This version correctly expects lowercase columns."""
     if df.empty or len(df) < 2: return {}
-    last_candle = df.iloc[-2]
-    high, low, close = last_candle['high'], last_candle['low'], last_candle['close']
+    last = df.iloc[-2]
+    high, low, close = last['high'], last['low'], last['close']
     pivot = (high + low + close) / 3
-    r1 = (2 * pivot) - low
-    s1 = (2 * pivot) - high
-    r2 = pivot + (high - low)
-    s2 = pivot - (high - low)
-    return {"R2": r2, "R1": r1, "Pivot": pivot, "S1": s1, "S2": s2}
+    return {"R2": pivot + (high-low), "R1": 2*pivot - low, "Pivot": pivot, "S1": 2*pivot - high, "S2": pivot - (high-low)}
 
 def get_competitors(ticker):
     """A placeholder function to get competitor data."""
@@ -81,16 +72,17 @@ app.layout = html.Div([
     ], className='header'),
 
     dcc.Store(id='ticker-store'),
-    html.Div(id='live-price-display', style={'marginTop': '20px'}),
+    html.Div(id='market-pulse-display', style={'marginTop': '20px'}),
+    html.Div(id='live-price-display', style={'marginTop': '10px'}),
     dcc.Loading(
         id="loading-spinner", type="circle",
         children=html.Div(id='dashboard-tabs-content')
     ),
-    dcc.Interval(id='live-price-interval', interval=3 * 1000, n_intervals=0)
+    dcc.Interval(id='global-interval-timer', interval=5 * 1000, n_intervals=0)
 ], style={'padding': '20px'})
 
 
-# --- Callback 1: Fetch data and build the main tabs ---
+# --- Callback 1: Fetch data for the main dashboard ---
 @app.callback(
     Output('dashboard-tabs-content', 'children'),
     Output('ticker-store', 'data'),
@@ -128,14 +120,13 @@ def update_dashboard_tabs(n_clicks, ticker):
 
         print("--- DATA FETCHING COMPLETE ---")
 
-        # --- Build UI Components using local functions ---
-        overview_tab = create_overview_tab(summary, fundamentals, hist_df)
-        technicals_tab = create_technicals_tab(tech_df)
+        overview_tab = create_overview_tab(summary, fundamentals, hist_df, ticker)
+        technicals_tab = create_technicals_tab(tech_df, ticker)
         scans_tab = create_scans_tab(pivot_points, graham_scan)
         ai_report_tab = create_ai_report_tab(ai_report)
         news_tab = create_news_tab(news_articles)
         competitors_tab = create_competitors_tab(competitors)
-
+        
         return html.Div(className='tab-content', children=[
             dcc.Tabs(id="main-tabs-final", children=[
                 dcc.Tab(label='Overview', children=overview_tab),
@@ -152,10 +143,10 @@ def update_dashboard_tabs(n_clicks, ticker):
         return html.Div(f"An error occurred: '{e}'."), ticker
 
 
-# --- Callback 2: Update the live price display ---
+# --- Callback 2: Update the live stock price display ---
 @app.callback(
     Output('live-price-display', 'children'),
-    Input('live-price-interval', 'n_intervals'),
+    Input('global-interval-timer', 'n_intervals'),
     State('ticker-store', 'data')
 )
 def update_live_price(n, ticker):
@@ -166,7 +157,6 @@ def update_live_price(n, ticker):
         stock_info = yf.Ticker(f"{ticker}.NS").info
         live_price = stock_info.get('currentPrice')
         previous_close = stock_info.get('previousClose')
-
         display_price = live_price if live_price is not None else previous_close
         if display_price is None: return html.Div()
 
@@ -190,10 +180,39 @@ def update_live_price(n, ticker):
         return html.Div()
 
 
-# --- All Component Creation Functions (Now safely inside app.py) ---
-def create_overview_tab(summary, fundamentals, hist_df):
+# --- Callback 3: Update Market Pulse Indices ---
+@app.callback(
+    Output('market-pulse-display', 'children'),
+    Input('global-interval-timer', 'n_intervals')
+)
+def update_market_pulse(n):
+    indices = {"NIFTY 50": "^NSEI", "BANK NIFTY": "^NSEBANK", "SENSEX": "^BSESN"}
+    cards = []
+    try:
+        data = yf.download(tickers=list(indices.values()), period="2d", progress=False)
+        for name, symbol in indices.items():
+            price = data['Close'][symbol].iloc[-1]
+            prev_close = data['Close'][symbol].iloc[-2]
+            change = price - prev_close
+            change_percent = (change / prev_close) * 100
+            color = '#34A853' if change >= 0 else '#EA4335'
+            symbol_char = '▲' if change >= 0 else '▼'
+            card = html.Div([
+                html.H4(name, style={'margin': 0, 'color': '#555'}),
+                html.H3(f"{price:,.2f}", style={'margin': 0}),
+                html.P(f"{symbol_char} {change:,.2f} ({change_percent:.2f}%)", style={'color': color, 'margin': 0})
+            ], className="mini-card", style={'padding': '15px', 'border': '1px solid #ddd', 'borderRadius': '5px', 'textAlign': 'center', 'backgroundColor': '#f9f9f9'})
+            cards.append(card)
+        return html.Div(cards, style={'display': 'grid', 'gridTemplateColumns': 'repeat(3, 1fr)', 'gap': '20px'})
+    except Exception as e:
+        print(f"Error fetching market pulse: {e}")
+        return html.Div()
+
+
+# --- Component Creation Functions (Safely inside app.py) ---
+def create_overview_tab(summary, fundamentals, hist_df, ticker):
     price_chart = go.Figure(data=[go.Candlestick(x=hist_df.index, open=hist_df['open'], high=hist_df['high'], low=hist_df['low'], close=hist_df['close'])])
-    price_chart.update_layout(title="Price Chart", xaxis_rangeslider_visible=False)
+    price_chart.update_layout(title=f"{ticker} Price Chart", xaxis_rangeslider_visible=False)
     return html.Div([
         html.H3('Company Overview'), html.P(summary),
         html.H3('Key Fundamentals'),
@@ -201,11 +220,11 @@ def create_overview_tab(summary, fundamentals, hist_df):
         dcc.Graph(figure=price_chart)
     ])
 
-def create_technicals_tab(tech_df):
+def create_technicals_tab(tech_df, ticker):
     price_chart_with_indicators = go.Figure(data=[go.Candlestick(x=tech_df.index, open=tech_df['open'], high=tech_df['high'], low=tech_df['low'], close=tech_df['close'])])
     price_chart_with_indicators.add_trace(go.Scatter(x=tech_df.index, y=tech_df['ema_50'], mode='lines', name='50-Day EMA', line={'color': 'orange'}))
     price_chart_with_indicators.add_trace(go.Scatter(x=tech_df.index, y=tech_df['ema_200'], mode='lines', name='200-Day EMA', line={'color': 'purple'}))
-    price_chart_with_indicators.update_layout(title="Price Chart with Indicators", xaxis_rangeslider_visible=False)
+    price_chart_with_indicators.update_layout(title=f"{ticker} Price Chart with Indicators", xaxis_rangeslider_visible=False)
     rsi_chart = go.Figure(go.Scatter(x=tech_df.index, y=tech_df['rsi_14'], mode='lines', name='RSI'))
     rsi_chart.update_layout(title='Relative Strength Index (RSI)')
     return html.Div([dcc.Graph(figure=price_chart_with_indicators), dcc.Graph(figure=rsi_chart)])
